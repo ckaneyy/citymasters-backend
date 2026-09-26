@@ -18,7 +18,9 @@ async function init() {
       email TEXT UNIQUE NOT NULL,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      created_at BIGINT NOT NULL
+      created_at BIGINT NOT NULL,
+      reset_token TEXT,
+      reset_expires BIGINT
     );
 
     CREATE TABLE IF NOT EXISTS players (
@@ -57,6 +59,9 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_tx_buyer ON transactions(buyer_id);
     CREATE INDEX IF NOT EXISTS idx_tx_seller ON transactions(seller_id);
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires BIGINT;
   `);
 }
 
