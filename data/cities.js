@@ -486,4 +486,4 @@ const TIER_WEIGHTS = { Commun: 55, Rare: 30, Épique: 12, Légendaire: 3 };
 const SHINY_CHANCE = 0.03;
 const SUGGESTED_PRICE = { Commun: 20, Rare: 60, Épique: 200, Légendaire: 800 };
 
-module.exports = { CITIES, CITY_BY_ID, COUNTRIES, TIER_WEIGHTS, SHINY_CHANCE, SUGGESTED_PRICE };
+module.exports = { CITIES, CITY_BY_ID, COUNTRIES, TIER_WEIGHTS, SHINY_CHANCE, SUGGESTED_PRICE }; 
