@@ -11,88 +11,108 @@ router.use(requireAuth);
 
 // Règle son affaire à une enchère expirée : transfère la carte au plus offrant,
 // débite/crédite les CityCoin, verse la commission au maire de la ville.
-// Appelée automatiquement à chaque lecture du marché (voir GET /market) et par
-// le job périodique dans server.js — idempotente : si déjà réglée, ne fait rien.
-function settleAuction(cardId) {
-  const card = db.prepare('SELECT * FROM cards WHERE id = ?').get(cardId);
+// Idempotente : si déjà réglée, ne fait rien.
+async function settleAuction(cardId) {
+  const { rows } = await db.query('SELECT * FROM cards WHERE id = $1', [cardId]);
+  const card = rows[0];
   if (!card || !card.listed) return;
+
   if (!card.current_bidder) {
-    db.prepare('UPDATE cards SET listed = 0, price = NULL, ends_at = NULL WHERE id = ?').run(cardId);
+    await db.query('UPDATE cards SET listed = false, price = NULL, ends_at = NULL WHERE id = $1', [cardId]);
     return;
   }
-  const buyer = db.prepare('SELECT * FROM players WHERE user_id = ?').get(card.current_bidder);
+
+  const { rows: buyerRows } = await db.query('SELECT * FROM players WHERE user_id = $1', [card.current_bidder]);
+  const buyer = buyerRows[0];
   if (!buyer || buyer.citycoin < card.price) {
-    db.prepare('UPDATE cards SET listed = 0, price = NULL, current_bidder = NULL, ends_at = NULL WHERE id = ?').run(cardId);
+    await db.query('UPDATE cards SET listed = false, price = NULL, current_bidder = NULL, ends_at = NULL WHERE id = $1', [cardId]);
     return;
   }
-  const seller = db.prepare('SELECT * FROM players WHERE user_id = ?').get(card.owner_id);
-  const mayor = computeMayor(db, card.city_id);
+
+  const { rows: sellerRows } = await db.query('SELECT * FROM players WHERE user_id = $1', [card.owner_id]);
+  const seller = sellerRows[0];
+  const mayor = await computeMayor(db, card.city_id);
   let commission = 0;
   if (mayor.ownerId && mayor.ownerId !== card.owner_id) {
     commission = Math.round(card.price * MAYOR_COMMISSION);
   }
 
-  const tx = db.transaction(() => {
-    db.prepare('UPDATE players SET citycoin = citycoin - ? WHERE user_id = ?').run(card.price, buyer.user_id);
-    db.prepare('UPDATE players SET citycoin = citycoin + ? WHERE user_id = ?').run(card.price - commission, seller.user_id);
-    if (commission > 0) {
-      db.prepare('UPDATE players SET citycoin = citycoin + ? WHERE user_id = ?').run(commission, mayor.ownerId);
-    }
-    db.prepare('UPDATE cards SET owner_id = ?, listed = 0, price = NULL, current_bidder = NULL, ends_at = NULL WHERE id = ?')
-      .run(buyer.user_id, cardId);
-    db.prepare('INSERT INTO transactions (id, city_id, shiny, price, buyer_id, seller_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(uuid(), card.city_id, card.shiny, card.price, buyer.user_id, seller.user_id, Date.now());
-  });
-  tx();
+  await db.query('UPDATE players SET citycoin = citycoin - $1 WHERE user_id = $2', [card.price, buyer.user_id]);
+  await db.query('UPDATE players SET citycoin = citycoin + $1 WHERE user_id = $2', [card.price - commission, seller.user_id]);
+  if (commission > 0) {
+    await db.query('UPDATE players SET citycoin = citycoin + $1 WHERE user_id = $2', [commission, mayor.ownerId]);
+  }
+  await db.query(
+    'UPDATE cards SET owner_id = $1, listed = false, price = NULL, current_bidder = NULL, ends_at = NULL WHERE id = $2',
+    [buyer.user_id, cardId]
+  );
+  await db.query(
+    'INSERT INTO transactions (id, city_id, shiny, price, buyer_id, seller_id, ts) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [uuid(), card.city_id, card.shiny, card.price, buyer.user_id, seller.user_id, Date.now()]
+  );
 }
 
-function settleAllExpired() {
-  const expired = db.prepare('SELECT id FROM cards WHERE listed = 1 AND ends_at <= ?').all(Date.now());
-  for (const row of expired) settleAuction(row.id);
+async function settleAllExpired() {
+  const { rows } = await db.query('SELECT id FROM cards WHERE listed = true AND ends_at <= $1', [Date.now()]);
+  for (const row of rows) await settleAuction(row.id);
 }
 
 // --- Mettre une carte aux enchères ---
-router.post('/list', (req, res) => {
-  const { cardId, price } = req.body || {};
-  const card = db.prepare('SELECT * FROM cards WHERE id = ?').get(cardId);
-  if (!card || card.owner_id !== req.userId) return res.status(404).json({ error: 'card_not_found' });
-  if (card.listed) return res.status(400).json({ error: 'already_listed' });
-  if (!Number.isInteger(price) || price <= 0) return res.status(400).json({ error: 'invalid_price' });
+router.post('/list', async (req, res) => {
+  try {
+    const { cardId, price } = req.body || {};
+    const { rows } = await db.query('SELECT * FROM cards WHERE id = $1', [cardId]);
+    const card = rows[0];
+    if (!card || card.owner_id !== req.userId) return res.status(404).json({ error: 'card_not_found' });
+    if (card.listed) return res.status(400).json({ error: 'already_listed' });
+    if (!Number.isInteger(price) || price <= 0) return res.status(400).json({ error: 'invalid_price' });
 
-  const player = db.prepare('SELECT * FROM players WHERE user_id = ?').get(req.userId);
-  const maxListings = player.premium ? MAX_LISTINGS_PREMIUM : MAX_LISTINGS_FREE;
-  const activeListings = db.prepare('SELECT COUNT(*) as n FROM cards WHERE owner_id = ? AND listed = 1').get(req.userId).n;
-  if (activeListings >= maxListings) {
-    return res.status(400).json({ error: 'listing_cap_reached', maxListings });
-  }
+    const { rows: playerRows } = await db.query('SELECT * FROM players WHERE user_id = $1', [req.userId]);
+    const player = playerRows[0];
+    const maxListings = player.premium ? MAX_LISTINGS_PREMIUM : MAX_LISTINGS_FREE;
+    const { rows: activeRows } = await db.query(
+      'SELECT COUNT(*) as n FROM cards WHERE owner_id = $1 AND listed = true', [req.userId]
+    );
+    if (Number(activeRows[0].n) >= maxListings) {
+      return res.status(400).json({ error: 'listing_cap_reached', maxListings });
+    }
 
-  db.prepare('UPDATE cards SET listed = 1, price = ?, current_bidder = NULL, ends_at = ? WHERE id = ?')
-    .run(price, Date.now() + AUCTION_DURATION_MS, cardId);
-  res.json({ ok: true });
+    await db.query(
+      'UPDATE cards SET listed = true, price = $1, current_bidder = NULL, ends_at = $2 WHERE id = $3',
+      [price, Date.now() + AUCTION_DURATION_MS, cardId]
+    );
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'server_error' }); }
 });
 
 // --- Voir les enchères en cours (règle d'abord celles qui sont expirées) ---
-router.get('/', (req, res) => {
-  settleAllExpired();
-  const listings = db.prepare('SELECT * FROM cards WHERE listed = 1 ORDER BY ends_at ASC').all();
-  res.json({ listings });
+router.get('/', async (req, res) => {
+  try {
+    await settleAllExpired();
+    const { rows } = await db.query('SELECT * FROM cards WHERE listed = true ORDER BY ends_at ASC');
+    res.json({ listings: rows });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'server_error' }); }
 });
 
 // --- Enchérir sur une carte ---
-router.post('/bid', (req, res) => {
-  const { cardId, amount } = req.body || {};
-  settleAllExpired();
-  const card = db.prepare('SELECT * FROM cards WHERE id = ?').get(cardId);
-  if (!card || !card.listed) return res.status(404).json({ error: 'listing_not_found' });
-  if (card.owner_id === req.userId) return res.status(400).json({ error: 'cannot_bid_own_card' });
-  if (!Number.isInteger(amount) || amount <= card.price) {
-    return res.status(400).json({ error: 'bid_too_low', minBid: card.price + 1 });
-  }
-  const player = db.prepare('SELECT * FROM players WHERE user_id = ?').get(req.userId);
-  if (player.citycoin < amount) return res.status(400).json({ error: 'insufficient_funds' });
+router.post('/bid', async (req, res) => {
+  try {
+    const { cardId, amount } = req.body || {};
+    await settleAllExpired();
+    const { rows } = await db.query('SELECT * FROM cards WHERE id = $1', [cardId]);
+    const card = rows[0];
+    if (!card || !card.listed) return res.status(404).json({ error: 'listing_not_found' });
+    if (card.owner_id === req.userId) return res.status(400).json({ error: 'cannot_bid_own_card' });
+    if (!Number.isInteger(amount) || amount <= card.price) {
+      return res.status(400).json({ error: 'bid_too_low', minBid: card.price + 1 });
+    }
+    const { rows: playerRows } = await db.query('SELECT * FROM players WHERE user_id = $1', [req.userId]);
+    const player = playerRows[0];
+    if (player.citycoin < amount) return res.status(400).json({ error: 'insufficient_funds' });
 
-  db.prepare('UPDATE cards SET price = ?, current_bidder = ? WHERE id = ?').run(amount, req.userId, cardId);
-  res.json({ ok: true });
+    await db.query('UPDATE cards SET price = $1, current_bidder = $2 WHERE id = $3', [amount, req.userId, cardId]);
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'server_error' }); }
 });
 
 module.exports = { router, settleAllExpired };
