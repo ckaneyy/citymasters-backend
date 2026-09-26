@@ -59,4 +59,67 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// --- Demande de réinitialisation : génère un code à 6 chiffres valable 30 minutes ---
+// NOTE : pour que l'email parte réellement, il faut configurer un service d'envoi
+// (ex: Resend, gratuit jusqu'à un certain volume) et renseigner RESEND_API_KEY.
+// Sans ça, le code est simplement affiché dans les logs Railway (utile pour tester).
+router.post('/request-reset', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    const { rows } = await db.query('SELECT * FROM users WHERE email = $1', [(email || '').toLowerCase()]);
+    const user = rows[0];
+    // Réponse identique que le compte existe ou non, pour ne pas révéler les emails inscrits.
+    if (!user) return res.json({ ok: true });
+
+    const resetCode = String(Math.floor(100000 + Math.random() * 900000));
+    const expires = Date.now() + 30 * 60 * 1000;
+    await db.query('UPDATE users SET reset_token = $1, reset_expires = $2 WHERE id = $3', [resetCode, expires, user.id]);
+
+    if (process.env.RESEND_API_KEY) {
+      try {
+        await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + process.env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM || 'CityMasters <onboarding@resend.dev>',
+            to: user.email,
+            subject: 'Réinitialise ton mot de passe CityMasters',
+            html: `<p>Ton code de réinitialisation : <b>${resetCode}</b></p><p>Valable 30 minutes.</p>`,
+          }),
+        });
+      } catch (mailErr) {
+        console.error('Échec envoi email reset', mailErr);
+      }
+    } else {
+      console.log(`[RESET] Code pour ${user.email} : ${resetCode} (RESEND_API_KEY non configurée, email non envoyé)`);
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('request-reset error', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// --- Confirmation : code + nouveau mot de passe ---
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body || {};
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'invalid_input', message: 'Mot de passe de 8 caractères minimum.' });
+    }
+    const { rows } = await db.query('SELECT * FROM users WHERE email = $1', [(email || '').toLowerCase()]);
+    const user = rows[0];
+    if (!user || user.reset_token !== token || !user.reset_expires || Number(user.reset_expires) < Date.now()) {
+      return res.status(400).json({ error: 'invalid_token', message: 'Code invalide ou expiré.' });
+    }
+    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    await db.query('UPDATE users SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE id = $2', [passwordHash, user.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('reset-password error', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 module.exports = router;
