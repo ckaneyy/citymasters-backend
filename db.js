@@ -1,58 +1,63 @@
-// Base de données SQLite locale (fichier unique, zéro configuration).
-// Pour passer à l'échelle en production, migrer vers PostgreSQL (Railway/Render
-// fournissent une base Postgres gratuite ou peu chère) en remplaçant ce fichier
-// par un client 'pg' — les requêtes SQL ci-dessous restent presque identiques.
+// Base de données PostgreSQL — fournie nativement par Railway (onglet "New" >
+// "Database" > "PostgreSQL" dans ton projet), sans module natif fragile
+// contrairement à SQLite. Railway injecte automatiquement DATABASE_URL.
 
-const Database = require('better-sqlite3');
-const db = new Database(process.env.DB_PATH || 'citymasters.db');
-db.pragma('journal_mode = WAL');
+const { Pool } = require('pg');
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
+    ? { rejectUnauthorized: false }
+    : false,
+});
 
-CREATE TABLE IF NOT EXISTS players (
-  user_id TEXT PRIMARY KEY,
-  citycoin INTEGER NOT NULL DEFAULT 500,
-  charges INTEGER NOT NULL DEFAULT 10,
-  last_update INTEGER NOT NULL,
-  premium INTEGER NOT NULL DEFAULT 0,
-  stripe_customer_id TEXT,
-  stripe_subscription_id TEXT,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    );
 
-CREATE TABLE IF NOT EXISTS cards (
-  id TEXT PRIMARY KEY,
-  owner_id TEXT NOT NULL,
-  city_id TEXT NOT NULL,
-  shiny INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  listed INTEGER NOT NULL DEFAULT 0,
-  price INTEGER,
-  current_bidder TEXT,
-  ends_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_cards_owner ON cards(owner_id);
-CREATE INDEX IF NOT EXISTS idx_cards_city ON cards(city_id);
-CREATE INDEX IF NOT EXISTS idx_cards_listed ON cards(listed);
+    CREATE TABLE IF NOT EXISTS players (
+      user_id TEXT PRIMARY KEY REFERENCES users(id),
+      citycoin INTEGER NOT NULL DEFAULT 500,
+      charges INTEGER NOT NULL DEFAULT 10,
+      last_update BIGINT NOT NULL,
+      premium BOOLEAN NOT NULL DEFAULT false,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT
+    );
 
-CREATE TABLE IF NOT EXISTS transactions (
-  id TEXT PRIMARY KEY,
-  city_id TEXT NOT NULL,
-  shiny INTEGER NOT NULL,
-  price INTEGER NOT NULL,
-  buyer_id TEXT NOT NULL,
-  seller_id TEXT NOT NULL,
-  ts INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tx_buyer ON transactions(buyer_id);
-CREATE INDEX IF NOT EXISTS idx_tx_seller ON transactions(seller_id);
-`);
+    CREATE TABLE IF NOT EXISTS cards (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      city_id TEXT NOT NULL,
+      shiny BOOLEAN NOT NULL DEFAULT false,
+      created_at BIGINT NOT NULL,
+      listed BOOLEAN NOT NULL DEFAULT false,
+      price INTEGER,
+      current_bidder TEXT,
+      ends_at BIGINT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cards_owner ON cards(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_cards_city ON cards(city_id);
+    CREATE INDEX IF NOT EXISTS idx_cards_listed ON cards(listed);
 
-module.exports = db;
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      city_id TEXT NOT NULL,
+      shiny BOOLEAN NOT NULL,
+      price INTEGER NOT NULL,
+      buyer_id TEXT NOT NULL,
+      seller_id TEXT NOT NULL,
+      ts BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tx_buyer ON transactions(buyer_id);
+    CREATE INDEX IF NOT EXISTS idx_tx_seller ON transactions(seller_id);
+  `);
+}
+
+module.exports = { pool, init, query: (text, params) => pool.query(text, params) };
