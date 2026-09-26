@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const db = require('./db');
 
 const authRoutes = require('./routes/auth');
 const gameRoutes = require('./routes/game');
@@ -25,7 +26,15 @@ app.use('/billing', billingRoutes);
 
 // Règle les enchères expirées toutes les 30 secondes même si personne
 // ne consulte le marché à ce moment précis.
-setInterval(settleAllExpired, 30000);
+setInterval(() => { settleAllExpired().catch(err => console.error('settle error', err)); }, 30000);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`CityMasters backend démarré sur le port ${PORT}`));
+
+db.init()
+  .then(() => {
+    app.listen(PORT, () => console.log(`CityMasters backend démarré sur le port ${PORT}`));
+  })
+  .catch(err => {
+    console.error('Échec de l\'initialisation de la base de données :', err);
+    process.exit(1);
+  });
