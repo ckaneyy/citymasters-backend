@@ -172,4 +172,23 @@ router.get('/history', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'server_error' }); }
 });
 
+// --- Défausser une carte contre des CityCoin (valeur selon la rareté) ---
+const DISCARD_VALUE = { Commun: 1, Rare: 5, Épique: 20, Légendaire: 100 };
+router.post('/cards/:id/discard', async (req, res) => {
+  try {
+    const { rows } = await db.query('SELECT * FROM cards WHERE id = $1', [req.params.id]);
+    const card = rows[0];
+    if (!card || card.owner_id !== req.userId) return res.status(404).json({ error: 'card_not_found' });
+    if (card.listed) return res.status(400).json({ error: 'card_listed', message: 'Retire la carte des enchères avant de la défausser.' });
+
+    const city = CITY_BY_ID[card.city_id];
+    const value = DISCARD_VALUE[city?.tier] || 1;
+
+    await db.query('DELETE FROM cards WHERE id = $1', [req.params.id]);
+    await db.query('UPDATE players SET citycoin = citycoin + $1 WHERE user_id = $2', [value, req.userId]);
+
+    res.json({ ok: true, earned: value });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'server_error' }); }
+});
+
 module.exports = router;
