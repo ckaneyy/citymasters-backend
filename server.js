@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth');
 const gameRoutes = require('./routes/game');
 const { router: marketRoutes, settleAllExpired } = require('./routes/market');
 const billingRoutes = require('./routes/billing');
+const socialRoutes = require('./routes/social');
 
 const app = express();
 
@@ -15,7 +16,8 @@ app.use(cors());
 // Le webhook Stripe a besoin du corps de requête BRUT pour vérifier la
 // signature — il doit donc être monté AVANT express.json() global.
 app.use('/billing/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+// Limite relevée à 2 Mo pour permettre l'upload de photo de profil (base64).
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -23,6 +25,7 @@ app.use('/auth', authRoutes);
 app.use('/game', gameRoutes);
 app.use('/market', marketRoutes);
 app.use('/billing', billingRoutes);
+app.use('/social', socialRoutes);
 
 // Règle les enchères expirées toutes les 30 secondes même si personne
 // ne consulte le marché à ce moment précis.
