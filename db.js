@@ -41,6 +41,7 @@ async function init() {
       created_at BIGINT NOT NULL,
       listed BOOLEAN NOT NULL DEFAULT false,
       price INTEGER,
+      buy_now_price INTEGER,
       current_bidder TEXT,
       ends_at BIGINT
     );
@@ -62,6 +63,7 @@ async function init() {
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires BIGINT;
+    ALTER TABLE cards ADD COLUMN IF NOT EXISTS buy_now_price INTEGER;
   `);
 }
 
