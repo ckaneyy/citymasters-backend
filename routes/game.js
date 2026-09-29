@@ -173,7 +173,7 @@ router.get('/history', async (req, res) => {
 });
 
 // --- Défausser une carte contre des CityCoin (valeur selon la rareté) ---
-const DISCARD_VALUE = { Commun: 1, Rare: 5, Épique: 20, Légendaire: 100 };
+const DISCARD_VALUE = { Commun: 1, Rare: 3, Épique: 20, Légendaire: 50 };
 router.post('/cards/:id/discard', async (req, res) => {
   try {
     const { rows } = await db.query('SELECT * FROM cards WHERE id = $1', [req.params.id]);
